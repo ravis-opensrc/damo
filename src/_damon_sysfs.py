@@ -704,8 +704,6 @@ def write_sample_filters_dir(dir_path, filters):
             return err
     return None
 
-    err = _damo_fs.write_file
-
 def write_sample_control_dir(dir_path, sample_control):
     if not os.path.isdir(dir_path):
         return None
