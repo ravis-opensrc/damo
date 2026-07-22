@@ -82,3 +82,49 @@ def target_pids(kdamonds):
 def sync_targets_to_group(name, kdamonds):
     '''Convenience: sync all live target PIDs (+threads) into the group.'''
     return sync_pids_to_group(name, target_pids(kdamonds))
+
+
+# MBM bandwidth counter reader helpers
+
+RESCTRL_MAX_L3 = 32
+
+def open_mbm_counters(mon_group=None, resctrl_root=None):
+    """Open all mon_L3_NN/mbm_total_bytes fds under mon_data/.
+
+    mon_group: if None, use root mon_data; else mon_groups/<mon_group>/mon_data.
+    resctrl_root: override for testing (default: RESCTRL_ROOT).
+    Returns a list of total_fds. Raises OSError if none found.
+    """
+    root = resctrl_root or RESCTRL_ROOT
+    if mon_group is None:
+        base = os.path.join(root, 'mon_data')
+    else:
+        base = os.path.join(root, 'mon_groups', mon_group, 'mon_data')
+    total_fds = []
+    for i in range(RESCTRL_MAX_L3):
+        pt = os.path.join(base, 'mon_L3_%02d' % i, 'mbm_total_bytes')
+        try:
+            ft = open(pt, 'rb')
+        except OSError:
+            break
+        total_fds.append(ft)
+    if not total_fds:
+        raise OSError('no mbm counters found under %s' % base)
+    return total_fds
+
+def _read_mbm_fd(fd):
+    """Read a single MBM counter fd, return int bytes."""
+    fd.seek(0)
+    return int(fd.read().strip())
+
+def read_mbm_total(total_fds):
+    """Sum mbm_total_bytes across all L3 instances. Returns bytes."""
+    return sum(_read_mbm_fd(f) for f in total_fds)
+
+def close_mbm_counters(total_fds):
+    """Close all open MBM fds."""
+    for f in total_fds:
+        try:
+            f.close()
+        except Exception:
+            pass
