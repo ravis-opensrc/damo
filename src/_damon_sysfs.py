@@ -575,6 +575,23 @@ def write_probe_prep_dir(dir_path, prep):
             os.path.join(dir_path, 'prep_action'), prep.prep_action)
     if err is not None:
         return err
+    if prep.prep_action == _damon.prep_action_perf_event:
+        for attr in _damon._PERF_EVENT_ATTRS:
+            # Conditional: only write sample_period when freq==0,
+            # only write sample_freq when freq==1
+            if attr == 'sample_period' and prep.freq == 1:
+                continue
+            if attr == 'sample_freq' and prep.freq != 1:
+                continue
+            val = getattr(prep, attr)
+            if val is None:
+                continue
+            fpath = os.path.join(dir_path, attr)
+            if not os.path.isfile(fpath):
+                continue  # kernel doesn't expose this field — skip
+            err = _damo_fs.write_file(fpath, '%d' % val)
+            if err is not None:
+                return err
     return None
 
 def write_probe_preps_dir(dir_path, preps):
@@ -1110,7 +1127,16 @@ def files_content_to_target(files_content):
 def files_content_to_probe_preps(files_content):
     preps = []
     for kv in number_sorted_dirs(files_content):
-        preps.append(_damon.DamonPrep(prep_action=kv['prep_action'].strip()))
+        prep_action = kv['prep_action'].strip()
+        kwargs = {'prep_action': prep_action}
+        if prep_action == _damon.prep_action_perf_event:
+            for attr in _damon._PERF_EVENT_ATTRS:
+                if attr in kv:
+                    val = kv[attr]
+                    if hasattr(val, 'strip'):
+                        val = val.strip()
+                    kwargs[attr] = int(val)
+        preps.append(_damon.DamonPrep(**kwargs))
     return preps
 
 def files_content_to_damon_filter(files_content):
