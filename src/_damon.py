@@ -1886,6 +1886,11 @@ def stage_kdamonds_targets(kdamonds):
         return 'debugfs interface does not support stage_kdamonds_target'
     return _damon_fs.stage_kdamonds_targets(kdamonds)
 
+def stage_kdamonds_quota_goals(kdamonds):
+    if _damon_fs == _damon_dbgfs:
+        return 'debugfs interface does not support stage_kdamonds_quota_goals'
+    return _damon_fs.stage_kdamonds_quota_goals(kdamonds)
+
 def commit_staged(kdamond_idxs):
     if _damon_fs == _damon_dbgfs:
         return 'debugfs interface does not support commit_staged()'
@@ -1926,6 +1931,9 @@ def commit(kdamonds, commit_quota_goals_only=False, commit_targets_only=False):
     kdamond_idxs = ['%s' % idx for idx, k in enumerate(kdamonds)]
 
     if commit_quota_goals_only:
+        err = stage_kdamonds_quota_goals(kdamonds)
+        if err:
+            return 'staging quota goals failed (%s)' % err
         err = commit_quota_goals(kdamond_idxs)
         if err:
             return 'commit quotas failed (%s)' % err
