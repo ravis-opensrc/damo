@@ -869,6 +869,35 @@ def stage_kdamonds_targets(kdamonds):
 
     return None
 
+def stage_kdamonds_quota_goals(kdamonds):
+    """Write quota goal target_values to sysfs for all schemes in kdamonds.
+
+    Only writes target_value (not metric/nid/current_value) since those
+    are set at scheme creation time and don't change during tuning.
+    """
+    kdamonds_dir = get_kdamonds_dir()
+    if kdamonds_dir is None:
+        return 'sysfs interface not available'
+    for k_idx, kdamond in enumerate(kdamonds):
+        for c_idx, context in enumerate(kdamond.contexts):
+            for s_idx, scheme in enumerate(context.schemes):
+                goals_dir = os.path.join(
+                    kdamonds_dir,
+                    '%d' % k_idx, 'contexts', '%d' % c_idx,
+                    'schemes', '%d' % s_idx, 'quotas', 'goals')
+                if not os.path.isdir(goals_dir):
+                    continue
+                for g_idx, goal in enumerate(scheme.quotas.goals):
+                    goal_dir = os.path.join(goals_dir, '%d' % g_idx)
+                    if not os.path.isdir(goal_dir):
+                        continue
+                    err = _damo_fs.write_file(
+                        os.path.join(goal_dir, 'target_value'),
+                        '%d' % goal.target_value)
+                    if err is not None:
+                        return err
+    return None
+
 # for current_kdamonds()
 
 def numbered_dirs_content(files_content, nr_filename):
