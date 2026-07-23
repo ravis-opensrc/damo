@@ -16,38 +16,110 @@ import _damo_fmt_str
 # Core data structures
 
 prep_action_set_pgidle = 'set_pgidle'
+prep_action_perf_event = 'perf_event'
 
 prep_actions = [
         prep_action_set_pgidle,
+        prep_action_perf_event,
+        ]
+
+# PMU attr field names for perf_event prep action
+_PERF_EVENT_ATTRS = [
+        'type', 'config', 'config1', 'config2',
+        'sample_period', 'freq', 'sample_freq',
+        'sample_phys_addr', 'sample_weight_struct',
+        'precise_ip', 'wakeup_events', 'exclude_kernel', 'exclude_hv',
         ]
 
 class DamonPrep:
     prep_action = None
+    # PMU attrs — only meaningful when prep_action == 'perf_event'
+    type = None
+    config = None
+    config1 = None
+    config2 = None
+    sample_period = None
+    freq = None
+    sample_freq = None
+    sample_phys_addr = None
+    sample_weight_struct = None
+    precise_ip = None
+    wakeup_events = None
+    exclude_kernel = None
+    exclude_hv = None
 
-    def __init__(self, prep_action=prep_action_set_pgidle):
+    def __init__(self, prep_action=prep_action_set_pgidle,
+                 type=None, config=None, config1=None, config2=None,
+                 sample_period=None, freq=None, sample_freq=None,
+                 sample_phys_addr=None, sample_weight_struct=None,
+                 precise_ip=None, wakeup_events=None,
+                 exclude_kernel=None, exclude_hv=None):
         if not prep_action in prep_actions:
             raise Exception('wrong prep action (%s)' % prep_action)
-
         self.prep_action = prep_action
+        if prep_action == prep_action_perf_event:
+            self.type = None if type is None else int(type)
+            self.config = None if config is None else int(config)
+            self.config1 = None if config1 is None else int(config1)
+            self.config2 = None if config2 is None else int(config2)
+            self.sample_period = (None if sample_period is None
+                                  else int(sample_period))
+            self.freq = None if freq is None else int(freq)
+            self.sample_freq = (None if sample_freq is None
+                                else int(sample_freq))
+            self.sample_phys_addr = (None if sample_phys_addr is None
+                                     else int(sample_phys_addr))
+            self.sample_weight_struct = (None if sample_weight_struct is None
+                                         else int(sample_weight_struct))
+            self.precise_ip = (None if precise_ip is None
+                               else int(precise_ip))
+            self.wakeup_events = (None if wakeup_events is None
+                                  else int(wakeup_events))
+            self.exclude_kernel = (None if exclude_kernel is None
+                                   else int(exclude_kernel))
+            self.exclude_hv = (None if exclude_hv is None
+                               else int(exclude_hv))
 
-    def to_str(self, raw):
-        return self.prep_action
+    def to_str(self, raw=False):
+        s = self.prep_action
+        if self.prep_action == prep_action_perf_event:
+            attrs = [(k, getattr(self, k)) for k in _PERF_EVENT_ATTRS
+                     if getattr(self, k) is not None]
+            if attrs:
+                s += ' (' + ' '.join('%s=%s' % (k, v)
+                                     for k, v in attrs) + ')'
+        return s
 
     def __str__(self):
         return self.to_str(False)
 
     def __eq__(self, other):
-        return type(self) == type(other) and \
-                self.prep_action == other.prep_action
+        if type(self) != type(other):
+            return False
+        if self.prep_action != other.prep_action:
+            return False
+        if self.prep_action == prep_action_perf_event:
+            return all(getattr(self, k) == getattr(other, k)
+                       for k in _PERF_EVENT_ATTRS)
+        return True
 
     @classmethod
     def from_kvpairs(cls, kv):
-        return DamonPrep(prep_action=kv['prep_action'])
+        kwargs = {'prep_action': kv['prep_action']}
+        if kv['prep_action'] == prep_action_perf_event:
+            for attr in _PERF_EVENT_ATTRS:
+                if attr in kv:
+                    kwargs[attr] = kv[attr]
+        return DamonPrep(**kwargs)
 
     def to_kvpairs(self, raw=False):
-        return collections.OrderedDict([
-            ('prep_action', self.prep_action),
-            ])
+        kv = collections.OrderedDict([('prep_action', self.prep_action)])
+        if self.prep_action == prep_action_perf_event:
+            for attr in _PERF_EVENT_ATTRS:
+                val = getattr(self, attr)
+                if val is not None:
+                    kv[attr] = val
+        return kv
 
 damon_filter_type_anon = 'anon'
 damon_filter_type_memcg = 'memcg'
