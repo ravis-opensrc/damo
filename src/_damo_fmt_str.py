@@ -118,9 +118,17 @@ def format_time_ns_exact(time_ns, machine_friendly):
     return format_time_ns_min_unit(time_ns, ns_ns, machine_friendly)
 
 def format_time_us_exact(time_us, machine_friendly):
+    # machine_friendly output must round-trip through text_to_us(), which reads
+    # a bare integer as microseconds.
+    if machine_friendly:
+        return '%d' % time_us
     return format_time_ns_exact(time_us * us_ns, machine_friendly)
 
 def format_time_ms_exact(time_ms, machine_friendly):
+    # machine_friendly output must round-trip through text_to_ms(), which reads
+    # a bare integer as milliseconds.
+    if machine_friendly:
+        return '%d' % time_ms
     return format_time_ns_exact(time_ms * ms_ns, machine_friendly)
 
 def format_time_ns(time_ns, machine_friendly):
