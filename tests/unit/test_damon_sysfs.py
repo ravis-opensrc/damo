@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 
+import os
+import tempfile
 import unittest
 
 import _test_damo_common
@@ -8,9 +10,30 @@ import _test_damo_common
 _test_damo_common.add_damo_dir_to_syspath()
 
 import _damo_fs
+import _damon
 import _damon_sysfs
 
 class TestDamonSysfs(unittest.TestCase):
+    def test_node_metric_goals_write_nid(self):
+        # The kernel reads goal->nid for every node-scoped metric, so a metric
+        # missing from metric_require_nid() silently omits the nid write and
+        # the goal is evaluated against node 0.
+        for metric in [_damon.qgoal_node_mem_used_bp,
+                       _damon.qgoal_node_mem_free_bp,
+                       _damon.qgoal_node_memcg_used_bp,
+                       _damon.qgoal_node_memcg_free_bp,
+                       _damon.qgoal_node_eligible_mem_bp]:
+            goal = _damon.DamosQuotaGoal(metric=metric, target_value='10000',
+                                         nid='1', memcg_path='/')
+            with tempfile.TemporaryDirectory() as goal_dir:
+                open(os.path.join(goal_dir, 'target_metric'), 'w').close()
+                _damo_fs.debug_dryrun({})
+                err = _damon_sysfs.write_quota_goal_dir(goal_dir, goal)
+                logs = _damo_fs.debug_get_dryrun_logs()
+            self.assertEqual(err, None)
+            self.assertIn("write '1' to '%s'" % os.path.join(goal_dir, 'nid'),
+                          logs, 'no nid write for %s' % metric)
+
     def test_json_kdamonds_staging(self):
         sysfs_dict = {
                 "nr_kdamonds": "1\n",
