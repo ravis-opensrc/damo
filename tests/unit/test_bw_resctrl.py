@@ -86,6 +86,34 @@ def test_non_integer_counter_reads_as_no_reading():
         finally:
             cleanup()
 
+def test_a_source_with_no_counter_reading_reports_no_bandwidth():
+    # Not 0.0 MB/s: a group that has just been created answers with a word until
+    # the hardware has counted for it, and zero bandwidth is what an unsaturated
+    # system looks like -- a state the controller steers by.
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+    import _damo_bw_source
+    tmp_path, cleanup = temp_dir()
+    try:
+        root = make_fake_resctrl(tmp_path, n_l3=1, total_vals=[1000])
+        (tmp_path / 'mon_data' / 'mon_L3_00'
+         / 'mbm_total_bytes').write_text('Unavailable\n')
+        src = _damo_bw_source.ResctrlMbmSource(resctrl_root=root)
+        try:
+            assert src.sample(1) is None
+        finally:
+            src.close()
+
+        # Once the counter answers, the same source reads it.
+        (tmp_path / 'mon_data' / 'mon_L3_00'
+         / 'mbm_total_bytes').write_text('1000\n')
+        src = _damo_bw_source.ResctrlMbmSource(resctrl_root=root)
+        try:
+            assert src.sample(1) == 0.0
+        finally:
+            src.close()
+    finally:
+        cleanup()
+
 def test_mon_group_path():
     tmp_path, cleanup = temp_dir()
     try:
@@ -126,6 +154,59 @@ def test_local_counter_is_summed_across_domains():
         assert len(lfds) == 3, len(lfds)
         assert resctrl.read_mbm_sum(lfds) == 6
         resctrl.close_mbm_counters(lfds)
+    finally:
+        cleanup()
+
+def test_window_log_records_both_counters_and_the_span():
+    # The quotient alone cannot say whether an impossible bandwidth figure came
+    # from the byte delta or from the span it was divided by, so a run records
+    # both counter deltas and the span, per window rather than per cycle.
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+    import _damo_bw_source, io
+    tmp_path, cleanup = temp_dir()
+    try:
+        root = make_fake_resctrl(tmp_path, n_l3=1, total_vals=[1000],
+                                 local_vals=[400])
+        log = io.StringIO()
+        src = _damo_bw_source.ResctrlMbmSource(resctrl_root=root,
+                                              window_log=log)
+        try:
+            src.sample(1)
+        finally:
+            src.close()
+        rows = [r for r in log.getvalue().splitlines() if r]
+        assert len(rows) == 1, rows
+        fields = rows[0].split(',')
+        assert len(fields) == 5, fields
+        assert fields[1] == '0', fields   # counters did not move
+        assert fields[2] == '0', fields
+        assert float(fields[3]) > 0, fields
+    finally:
+        cleanup()
+
+def test_window_log_records_a_window_that_had_no_reading():
+    # A window the controller drops is exactly the window worth having on
+    # record, so the row is written whether or not a reading came out of it.
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+    import _damo_bw_source, io
+    tmp_path, cleanup = temp_dir()
+    try:
+        root = make_fake_resctrl(tmp_path, n_l3=1, total_vals=[1000])
+        (tmp_path / 'mon_data' / 'mon_L3_00'
+         / 'mbm_total_bytes').write_text('Unavailable\n')
+        log = io.StringIO()
+        src = _damo_bw_source.ResctrlMbmSource(resctrl_root=root,
+                                              window_log=log)
+        try:
+            assert src.sample(1) is None
+        finally:
+            src.close()
+        rows = [r for r in log.getvalue().splitlines() if r]
+        assert len(rows) == 1, rows
+        fields = rows[0].split(',')
+        # Empty, not zero: the counter had nothing to report.
+        assert fields[1] == '', fields
+        assert fields[2] == '', fields
     finally:
         cleanup()
 
@@ -175,6 +256,49 @@ def test_a_read_the_counter_contradicts_is_not_confirmed():
     val, ok = resctrl.read_mbm_confirmed(fds)
     assert val == 19298259099648, val
     assert ok is False, 'a read above the counter must not be confirmed'
+
+def test_a_window_with_an_unconfirmed_boundary_has_no_reading():
+    # Dropped, not repaired.  The confirming read says the two disagreed, not
+    # which one was right, and a window rebuilt from the survivor would span an
+    # interval nothing here timed.
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+    import _damo_bw_source, io
+    tmp_path, cleanup = temp_dir()
+    try:
+        root = make_fake_resctrl(tmp_path, n_l3=1, total_vals=[1000])
+        log = io.StringIO()
+        src = _damo_bw_source.ResctrlMbmSource(resctrl_root=root, window_log=log)
+        try:
+            src._tfds = [_FlakyFd([19298259099648, 1000, 1000, 1000])]
+            assert src.sample(1) is None
+        finally:
+            src.close()
+        rows = [r for r in log.getvalue().splitlines() if r]
+        # On record as rejected, and rejected for a stated reason: a window the
+        # controller never saw is the one worth being able to count later.
+        assert rows[-1].endswith('unordered'), rows
+    finally:
+        cleanup()
+
+def test_the_window_log_marks_a_normal_window_ok():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+    import _damo_bw_source, io
+    tmp_path, cleanup = temp_dir()
+    try:
+        root = make_fake_resctrl(tmp_path, n_l3=1, total_vals=[1000],
+                                 local_vals=[400])
+        log = io.StringIO()
+        src = _damo_bw_source.ResctrlMbmSource(resctrl_root=root, window_log=log)
+        try:
+            assert src.sample(1) == 0.0
+        finally:
+            src.close()
+        fields = [r for r in log.getvalue().splitlines() if r][-1].split(',')
+        assert len(fields) == 5, fields
+        assert fields[4] == 'ok', fields
+    finally:
+        cleanup()
+
 
 if __name__ == '__main__':
     # test.sh runs each file with python3, so the tests need an explicit
