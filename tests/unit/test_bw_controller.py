@@ -81,6 +81,12 @@ def test_step_returns_int():
     r = ctrl.step([250])
     assert isinstance(r, int)
 
+def test_floor_reading_flattens_below_cutoff():
+    ctrl = BwController(init_ratio=70, bw_cutoff=CUTOFF)
+    assert ctrl.floor_reading(10) == ctrl.floor_reading(150) == CUTOFF - 1
+    assert ctrl.floor_reading(CUTOFF) == CUTOFF
+    assert ctrl.floor_reading(500) == 500
+
 
 if __name__ == '__main__':
     # test.sh runs each file with python3, so the tests need an explicit

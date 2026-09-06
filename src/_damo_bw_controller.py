@@ -255,6 +255,20 @@ class BwController:
         self.last_ratio = ratio
         return ratio
 
+    def floor_reading(self, bw):
+        """Raise a below-cutoff reading to just under the cutoff.
+
+        Below the cutoff the memory system is not what is limiting the workload,
+        so how far below it the reading sat says nothing about the ratio -- but it
+        is a large relative change, and both the step size and the spectrum are
+        computed from relative changes.  Collapsing the whole below-cutoff range
+        to one value keeps the unsaturated branch reachable while leaving an idle
+        stretch flat instead of loud.
+        """
+        if bw < self.bw_cutoff:
+            return float(self.bw_cutoff - 1)
+        return bw
+
     def _stage1_periods(self, cur_int):
         """Candidate periods for stage 1, longest first.
 
