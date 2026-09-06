@@ -820,8 +820,8 @@ def build_config(hotness_str, near_node=0, far_node=1,
                                               frac=bw_cutoff_frac)
         result['auto_tier'] = {
             'bw_cutoff_mbps': bw_cutoff_mbps,
-            'stable_window_ms': 3000,
-            'tolerance_bp': 500,
+            'stable_window_ms': 5000,
+            'tolerance_bp': 200,
             'near_node': near_node,
             'far_node': far_node,
             'sample_interval_ms': 1000,
