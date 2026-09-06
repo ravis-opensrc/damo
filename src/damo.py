@@ -32,6 +32,7 @@ import damo_setup_cli_completion
 import damo_start
 import damo_stop
 import damo_tune
+import damo_auto_tier
 import damo_validate
 import damo_version
 
@@ -41,6 +42,8 @@ subcmds = [
             msg='start DAMON with given parameters'),
         _damo_subcmds.DamoSubCmd(name='tune', module=damo_tune,
             msg='update input parameters of ongoing DAMON'),
+        _damo_subcmds.DamoSubCmd(name='auto_tier', module=damo_auto_tier,
+            msg='tune memory bandwidth interleave ratio using DAMON feedback'),
         _damo_subcmds.DamoSubCmd(name='stop', module=damo_stop,
             msg='stop running DAMON'),
 
