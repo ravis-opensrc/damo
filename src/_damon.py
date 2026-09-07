@@ -1951,6 +1951,17 @@ def update_tuned_intervals(kdamond_idxs=None):
         return err
     return None
 
+def set_stats_self_refresh(kdamond_idx, period_ms):
+    """Ask a running kdamond to keep its own stats current.
+
+    Returns None once the kernel has taken the request, or an error describing
+    why it has not.  A caller that gets an error has to command each refresh
+    itself, which is what asking for this avoids.
+    """
+    if _damon_fs != _damon_sysfs:
+        return 'stats self refresh needs the sysfs interface'
+    return _damon_sysfs.set_stats_self_refresh(kdamond_idx, period_ms)
+
 def update_schemes_stats(kdamond_idxs=None):
     if kdamond_idxs == None:
         kdamond_idxs = running_kdamond_idxs()
