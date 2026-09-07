@@ -1270,6 +1270,18 @@ def commit_quota_goals(kdamond_idxs):
         if err != None:
             return err
 
+def set_stats_self_refresh(kdamond_idx, period_ms):
+    """Set the period a kdamond refreshes its own stats at, zero to stop.
+
+    Returns None once the kernel has taken the request.  The file is absent
+    before the kernel that added it, and the write failing then is an ordinary
+    outcome rather than a fault: it means the caller has to keep commanding each
+    refresh itself.
+    """
+    return _damo_fs.write_file(
+            os.path.join(kdamond_dir_of(kdamond_idx), 'refresh_ms'),
+            '%d' % period_ms)
+
 # features
 
 # sysfs was merged in v5.18-rc1
