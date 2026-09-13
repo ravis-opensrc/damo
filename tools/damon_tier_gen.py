@@ -868,6 +868,19 @@ def _yaml_dump(config, stream=None):
 # CLI
 # ---------------------------------------------------------------------------
 
+def _target_bp(s):
+    """Argparse type for --target_bp: int in [0, 10000]."""
+    try:
+        v = int(s)
+    except ValueError:
+        raise __import__('argparse').ArgumentTypeError(
+            'target_bp must be an integer 0-10000, got %r' % s)
+    if not 0 <= v <= 10000:
+        raise __import__('argparse').ArgumentTypeError(
+            'target_bp must be 0-10000, got %d' % v)
+    return v
+
+
 def main():
     if not _have_yaml:
         print('error: pyyaml not installed; run: pip install pyyaml',
@@ -886,7 +899,7 @@ def main():
                         help='DRAM NUMA node (default 0)')
     parser.add_argument('--far_node', type=int, default=1,
                         help='CXL NUMA node (default 1)')
-    parser.add_argument('--target_bp', type=int, default=None,
+    parser.add_argument('--target_bp', type=_target_bp, default=None,
                         help='one-shot target_dram_bp (0-10000); '
                              'omit for closed-loop auto_tier mode')
     parser.add_argument('--cold_demote', action='store_true',
