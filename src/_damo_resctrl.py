@@ -21,7 +21,13 @@ def resctrl_mounted():
 
 
 def ensure_mon_group(name):
-    '''Create resctrl mon_groups/<name> if needed.  Returns error string or None.'''
+    '''Create resctrl mon_groups/<name> if needed.  Returns error string or None.
+
+    If the group already exists from a previous run, clear its tasks list so
+    stale thread assignments do not keep bandwidth counter slots open against
+    dead processes, which causes the sampler to wait indefinitely for a full
+    window of readings.
+    '''
     if not resctrl_mounted():
         return ('resctrl not mounted (try: sudo mount -t resctrl resctrl %s)'
                 % RESCTRL_ROOT)
@@ -31,6 +37,14 @@ def ensure_mon_group(name):
             os.mkdir(grp)
         except Exception as e:
             return 'failed to create mon group %s (%s)' % (grp, e)
+    else:
+        # Group already exists: clear stale tasks before the new run populates it.
+        tasks_path = os.path.join(grp, 'tasks')
+        try:
+            with open(tasks_path, 'w') as f:
+                f.write('')
+        except Exception:
+            pass
     return None
 
 
