@@ -583,10 +583,17 @@ def write_ops_attrs_dir(dir_path, ops_attrs):
         return err
 
 def write_probe_prep_dir(dir_path, prep):
-    err = _damo_fs.write_file(
-            os.path.join(dir_path, 'prep_action'), prep.prep_action)
-    if err is not None:
-        return err
+    # Read the current prep_action value before writing.  stage_kdamonds() is
+    # called on every WeightActuator ratio commit even though only dests[].weight
+    # changed; writing prep_action races damon_sysfs_lock held by a concurrent
+    # state_store (commit or stats-refresh path) and returns -EBUSY.  Skip the
+    # write when the value is already correct to avoid the race entirely.
+    prep_action_path = os.path.join(dir_path, 'prep_action')
+    current, read_err = _damo_fs.read_file(prep_action_path)
+    if read_err is not None or current.strip() != prep.prep_action:
+        err = _damo_fs.write_file(prep_action_path, prep.prep_action)
+        if err is not None:
+            return err
     if prep.prep_action == _damon.prep_action_perf_event:
         for attr in _damon._PERF_EVENT_ATTRS:
             # Conditional: only write sample_period when freq==0,
