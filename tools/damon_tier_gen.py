@@ -483,12 +483,11 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
                       min_nr_regions=None, max_nr_regions=None):
     """Build the hot-tracking context, optionally with cold demotion.
 
-    With cold_demote the context enables the page-fault primitive alongside
-    the probe and carries the cold scheme in the same scheme list, so one
-    kdamond drives both directions.  The two signals are additive: the probe
-    credits the regions its PMU reports, the page-fault primitive's marker
-    reports the rest, and a region neither reports decays to zero accesses,
-    which is what the cold scheme matches on.
+    With cold_demote the context turns both software access check primitives
+    off and carries the cold scheme in the same scheme list, so one kdamond
+    drives both directions.  The probe credits the regions its PMU reports,
+    and a region it does not report decays to zero accesses, which is what
+    the cold scheme matches on.
     """
     # Build probes
     probes = []
@@ -530,18 +529,14 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
         schemes = schemes + [build_cold_scheme(near_node, far_node,
                                                mode=cold_demote_mode,
                                                near_ranges=near_ranges)]
-        # Exactly one primitive may be enabled.  The page-fault primitive is
-        # the one that produces the absence of an access under a probe: it is
-        # the only path whose zero-access decay still runs when a probe is
-        # attached.
+        # Both primitives off: the probe is the access signal, and the
+        # kernel decays the regions it does not report.
         sample_control = _damon.DamonSampleControl(
             primitives_enabled=_damon.DamonPrimitivesEnabled(
-                page_table=False, page_fault=True))
+                page_table=False, page_fault=False))
 
-    # Region bounds do double duty when the page-fault primitive is enabled:
-    # they set the resolution a hot or cold sub-region has to survive at, and
-    # they set the sampling rate, because the primitive installs one marker per
-    # region per sampling interval.
+    # Region bounds set the resolution a hot or cold sub-region has to
+    # survive at.
     #
     # The resolution is what decides which scheme a region is offered to, so a
     # bound too coarse for the span silently swaps the two.  A region wide
@@ -697,25 +692,25 @@ def build_cold_scheme(near_node=0, far_node=1, mode='reactive',
     node.  The scheme has two gates:
 
       1. access_rate 0%..0% + age >= 5s -- region-level cold: no accesses
-         credited for at least 5s, by either the probe or the page-fault
-         primitive.
+         credited by the probe for at least 5s.
       2. quota goal node_mem_free_bp on the near node -- the memory-pressure
          trigger.  Goal feedback grows the effective demotion quota as the
          near node's free memory falls toward the 1% target, so demotion
          only ramps up under real pressure.
 
-    The scheme lives in the hot context.  What makes nr_accesses==0 mean 'cold'
-    rather than 'not sampled by perf' is the page-fault primitive the caller
-    enables alongside the probe: it reports accesses the probe's PMU does not,
-    so a region only reaches zero when neither source reported it.
+    The scheme lives in the hot context, where the probe is the only access
+    signal: a region reaches nr_accesses==0 when the PMU sampled none of its
+    accesses over the window.  A sampled source cannot tell an idle region
+    from one accessed below its sampling rate, so the 5s age gate is what
+    keeps a briefly unsampled region from being demoted.
 
-    Coldness therefore rests on those two sources and on nothing else.  A
-    reject-young filter would add a third: it rechecks each folio's PTE Accessed
+    Coldness therefore rests on the probe and on nothing else.  A reject-young
+    filter would add a second source: it rechecks each folio's PTE Accessed
     bit at apply time and clears it, which is the bit the page-table primitive
-    owns -- and that primitive is the one this configuration disables in favour
-    of the page-fault one.  Consulting it here would decide coldness by a PTE
-    scan running underneath the sources above, and clearing it would take
-    accesses away from them, so no such filter is installed.
+    owns -- and that primitive is the one this configuration disables.
+    Consulting it here would decide coldness by a PTE scan running underneath
+    the probe, and clearing it would take accesses away from it, so no such
+    filter is installed.
 
     near_ranges scopes the scheme to the near node's physical addresses and is
     required in paddr mode: there the monitoring target spans both nodes, so an
