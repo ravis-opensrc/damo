@@ -486,8 +486,8 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
     With cold_demote the context turns both software access check primitives
     off and carries the cold scheme in the same scheme list, so one kdamond
     drives both directions.  The probe credits the regions its PMU reports,
-    and a region it does not report decays to zero accesses, which is what
-    the cold scheme matches on.
+    and a region it does not report ends each aggregation interval with zero
+    accesses, which is what the cold scheme matches on.
     """
     # Build probes
     probes = []
@@ -529,8 +529,8 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
         schemes = schemes + [build_cold_scheme(near_node, far_node,
                                                mode=cold_demote_mode,
                                                near_ranges=near_ranges)]
-        # Both primitives off: the probe is the access signal, and the
-        # kernel decays the regions it does not report.
+        # Both primitives off: the probe is the only access signal, so a
+        # region it does not report ends each aggregation with no accesses.
         sample_control = _damon.DamonSampleControl(
             primitives_enabled=_damon.DamonPrimitivesEnabled(
                 page_table=False, page_fault=False))
