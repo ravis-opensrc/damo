@@ -141,26 +141,25 @@ def parse_hotness(hotness_str):
     return result
 
 
-def resolve_probe_weights(sources, cold_demote):
-    """Fill in unspecified probe weights.
+def resolve_probe_weights(sources):
+    """Fill in unspecified probe weights with 1, and reject 0 for perf sources.
 
-    A nonzero weight hands region merging and aging to the probe's own hit
-    counts and turns off the software access check, which leaves a cold scheme
-    with nothing to age.  Cold demotion therefore needs weight 0, which keeps
-    nr_accesses the readable signal for both schemes: the probe still credits
-    the regions it reports, and the regions it does not report decay.
+    A nonzero probe weight puts the context in DAMON's data attributes-only
+    monitoring mode: regions are adjusted and aged by the weighted probe hits,
+    nr_accesses is not updated, and the schemes built here select regions with
+    probe_hits_wsum filters.  A perf probe with weight 0 would only be counted,
+    with nothing acting on its samples.
     """
-    default = 0 if cold_demote else 1
     resolved = []
     for name, weight in sources:
         if weight is None:
-            weight = default
-        elif cold_demote and weight != 0:
+            weight = 1
+        elif weight == 0 and name != 'pte':
             raise ValueError(
-                'probe weight %d for source %r cannot be combined with '
-                '--cold_demote: a nonzero weight disables the software access '
-                'check, so no region ages and the cold scheme never matches. '
-                'Use %s:0 or omit the weight.' % (weight, name, name))
+                'probe weight 0 for source %r: the schemes this generator '
+                'builds select regions by the weighted probe hits, which a '
+                'zero weight leaves at zero.  Use a nonzero weight or omit '
+                'it.' % name)
         resolved.append((name, weight))
     return resolved
 
@@ -483,11 +482,12 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
                       min_nr_regions=None, max_nr_regions=None):
     """Build the hot-tracking context, optionally with cold demotion.
 
-    With cold_demote the context turns both software access check primitives
-    off and carries the cold scheme in the same scheme list, so one kdamond
-    drives both directions.  The probe credits the regions its PMU reports,
-    and a region it does not report ends each aggregation interval with zero
-    accesses, which is what the cold scheme matches on.
+    With cold_demote the context carries the cold scheme in the same scheme
+    list, so one kdamond drives both directions.  The context runs in data
+    attributes-only monitoring: a region's probe hit count rises by one for
+    each sampling interval in which its PMU sampled an access in it.  The hot
+    scheme selects regions with probe hits and the cold scheme those without,
+    both through probe_hits_wsum filters.
     """
     # Build probes
     probes = []
@@ -522,18 +522,17 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
             targets = [_damon.DamonTarget(pid=None, regions=[])]
         schemes = _build_vaddr_schemes(near_node, far_node, target_bp=target_bp)
 
-    sample_control = None
     if cold_demote:
         # The cold scheme goes last so the hot schemes keep the indices the
         # bandwidth controller addresses them by.
         schemes = schemes + [build_cold_scheme(near_node, far_node,
                                                mode=cold_demote_mode,
                                                near_ranges=near_ranges)]
-        # Both primitives off: the probe is the only access signal, so a
-        # region it does not report ends each aggregation with no accesses.
-        sample_control = _damon.DamonSampleControl(
-            primitives_enabled=_damon.DamonPrimitivesEnabled(
-                page_table=False, page_fault=False))
+    # The kernel requires page_table; with a probe weight set, data
+    # attributes-only monitoring does not run the page table check.
+    sample_control = _damon.DamonSampleControl(
+        primitives_enabled=_damon.DamonPrimitivesEnabled(
+            page_table=True, page_fault=False))
 
     # Region bounds set the resolution a hot or cold sub-region has to
     # survive at.
@@ -541,19 +540,19 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
     # The resolution is what decides which scheme a region is offered to, so a
     # bound too coarse for the span silently swaps the two.  A region wide
     # enough to hold both the memory a process is using and the memory it has
-    # stopped using carries one access count for all of it, and whichever
+    # stopped using carries one probe hit count for all of it, and whichever
     # signature wins drags the rest along: a nonzero count admits the promotion
     # scheme over the idle part and, because the cold scheme matches only a zero
     # count, excludes demotion from those pages entirely.  The idle memory then
     # moves under the promotion scheme's weights instead of being demoted, which
-    # looks like demotion working and is not.  A count that decays to zero does
+    # looks like demotion working and is not.  A count that stays at zero does
     # the reverse and demotes memory that is still being read.
     #
     # So the floor is derived from the span rather than fixed, to start the
-    # regions small enough that the two signatures separate.  The kdamond splits
-    # and merges from there by access rate; this only sets where it begins, and
-    # beginning too coarse is not recoverable, because a region is only ever
-    # split on a difference the region itself was able to show.
+    # regions small enough that the two signatures separate.  The kdamond merges
+    # them from there by probe hits; this only sets where it begins, and
+    # beginning too coarse recovers poorly: the kdamond splits regions at
+    # random points, and the pieces merge back unless their probe hits differ.
     if min_nr_regions is None and cold_demote:
         span = _monitored_span(ops, targets)
         if span:
@@ -580,6 +579,30 @@ def build_hot_context(sources, ops, near_node=0, far_node=1,
         sample_control=sample_control)
 
 
+_WSUM_MAX = 4294967295
+
+
+def probe_hits_reject_filter(lo, hi):
+    """Reject regions whose weighted probe hit sum is in [lo, hi]."""
+    return _damon.DamosFilter(
+        filter_type='probe_hits_wsum', matching=True, allow=False,
+        probe_hits_wsum_range=[str(lo), str(hi)])
+
+
+def addr_reject_outside_filter(ranges):
+    """Reject regions outside the first of @ranges.
+
+    DAMOS core filters stop at the first one a region matches, so scoping by
+    address is a reject filter for the outside rather than an allow filter for
+    the inside, which would let every region in the range through before the
+    probe_hits_wsum filter is checked.
+    """
+    lo, hi = ranges[0]
+    return _damon.DamosFilter(
+        filter_type='addr', matching=False, allow=False,
+        address_range=_damon.DamonRegion(lo, hi))
+
+
 def _build_paddr_schemes(dram_ranges, cxl_ranges, near_node, far_node,
                          target_bp=None):
     """PULL+PUSH schemes with addr filters and node_eligible_mem_bp goals."""
@@ -589,14 +612,6 @@ def _build_paddr_schemes(dram_ranges, cxl_ranges, near_node, far_node,
     closed_loop = target_bp is None
     if closed_loop:
         target_bp = 10000
-
-    def addr_filter(ranges):
-        lo, hi = ranges[0]
-        return _damon.DamosFilter(
-            filter_type='addr',
-            matching=True,
-            allow=True,
-            address_range=_damon.DamonRegion(lo, hi))
 
     def make_scheme(nid, goal_bp, filter_ranges):
         goal = _damon.DamosQuotaGoal(
@@ -609,14 +624,11 @@ def _build_paddr_schemes(dram_ranges, cxl_ranges, near_node, far_node,
             reset_interval_ms=1000,
             goals=[goal],
             goal_tuner='temporal')
-        filt = addr_filter(filter_ranges)
+        # Hot = at least one weighted probe hit; nr_accesses is not updated
+        # in data attributes-only monitoring, so the pattern does not gate it.
         ap = _damon.DamosAccessPattern(
             sz_bytes=['4096', 'max'],
-            # nr_accesses min=1 as an ABSOLUTE sample count (unit_samples),
-            # not '1 %': a percent-of-max value rounds down to 0 samples on
-            # sysfs write (e.g. 1% of max=20 -> 0), which would match every
-            # region including nr_accesses==0 ('not sampled by perf').
-            nr_accesses=['1', 'max'],
+            nr_accesses=['0', 'max'],
             nr_accesses_unit=_damon.unit_samples,
             age=['0', 'max'])
         return _damon.Damos(
@@ -624,7 +636,8 @@ def _build_paddr_schemes(dram_ranges, cxl_ranges, near_node, far_node,
             target_nid=nid,
             access_pattern=ap,
             quotas=quotas,
-            filters=[filt])
+            filters=[addr_reject_outside_filter(filter_ranges),
+                     probe_hits_reject_filter(0, 0)])
 
     # Closed-loop always emits both PULL+PUSH so the controller can move the
     # ratio in either direction; the initial goals encode ratio=100 (all-DRAM):
@@ -672,15 +685,17 @@ def _build_vaddr_schemes(near_node, far_node, target_bp=None):
         sz_bytes=0,
         reset_interval_ms=0,
         goals=[])
+    # Hot = at least one weighted probe hit (data attributes-only monitoring).
     ap = _damon.DamosAccessPattern(
         sz_bytes=['4096', 'max'],
-        nr_accesses=['1', 'max'],
+        nr_accesses=['0', 'max'],
         nr_accesses_unit=_damon.unit_samples,
         age=['0', 'max'])
     return [_damon.Damos(
         action='migrate_hot',
         access_pattern=ap,
         quotas=quotas,
+        filters=[probe_hits_reject_filter(0, 0)],
         dests=dests)]
 
 
@@ -691,26 +706,26 @@ def build_cold_scheme(near_node=0, far_node=1, mode='reactive',
     Demotes unused (cold, not-recently-accessed) near-node pages to the far
     node.  The scheme has two gates:
 
-      1. access_rate 0%..0% + age >= 5s -- region-level cold: no accesses
-         credited by the probe for at least 5s.
+      1. no weighted probe hit + age >= 5s -- region-level cold: the probe
+         sampled none of the region's accesses for at least 5s.
       2. quota goal node_mem_free_bp on the near node -- the memory-pressure
          trigger.  Goal feedback grows the effective demotion quota as the
          near node's free memory falls toward the 1% target, so demotion
          only ramps up under real pressure.
 
-    The scheme lives in the hot context, where the probe is the only access
-    signal: a region reaches nr_accesses==0 when the PMU sampled none of its
-    accesses over the window.  A sampled source cannot tell an idle region
-    from one accessed below its sampling rate, so the 5s age gate is what
-    keeps a briefly unsampled region from being demoted.
+    The scheme lives in the hot context, which runs in data attributes-only
+    monitoring: a region's weighted probe hit sum is 0 when the PMU sampled
+    none of its accesses over the window, and its age then keeps growing.
+    A sampled source cannot tell an idle region from one accessed below its
+    sampling rate, so the 5s age gate is what keeps a briefly unsampled region
+    from being demoted.
 
     Coldness therefore rests on the probe and on nothing else.  A reject-young
     filter would add a second source: it rechecks each folio's PTE Accessed
     bit at apply time and clears it, which is the bit the page-table primitive
-    owns -- and that primitive is the one this configuration disables.
-    Consulting it here would decide coldness by a PTE scan running underneath
-    the probe, and clearing it would take accesses away from it, so no such
-    filter is installed.
+    owns -- and that primitive does not run in data attributes-only
+    monitoring.  Consulting it here would decide coldness by a PTE scan
+    running underneath the probe, so no such filter is installed.
 
     near_ranges scopes the scheme to the near node's physical addresses and is
     required in paddr mode: there the monitoring target spans both nodes, so an
@@ -719,11 +734,12 @@ def build_cold_scheme(near_node=0, far_node=1, mode='reactive',
     address space, which carries no node, so there is nothing to scope by and
     target_nid alone decides where a page goes.
     """
-    # Cold = not accessed for >= 5s.  access_rate 0%..0% keeps only regions
-    # with zero credited accesses.
+    # Cold = no weighted probe hit for >= 5s.  nr_accesses is not updated in
+    # data attributes-only monitoring; the probe_hits_wsum filter selects.
     ap = _damon.DamosAccessPattern(
         sz_bytes=['4096', 'max'],
-        nr_accesses=['0 %', '0 %'],
+        nr_accesses=['0', 'max'],
+        nr_accesses_unit=_damon.unit_samples,
         age=['5s', 'max'])
     # Demotion pace depends on mode:
     #   reactive  - node_mem_free_bp goal on the NEAR node gates demotion by
@@ -749,10 +765,8 @@ def build_cold_scheme(near_node=0, far_node=1, mode='reactive',
         goal_tuner='temporal')
     filters = []
     if near_ranges:
-        lo, hi = near_ranges[0]
-        filters = [_damon.DamosFilter(
-            filter_type='addr', matching=True, allow=True,
-            address_range=_damon.DamonRegion(lo, hi))]
+        filters.append(addr_reject_outside_filter(near_ranges))
+    filters.append(probe_hits_reject_filter(1, _WSUM_MAX))
     dests = [_damon.DamosDest(id=far_node, weight=100)]
     return _damon.Damos(
         action='migrate_cold',
@@ -772,7 +786,7 @@ def build_config(hotness_str, near_node=0, far_node=1,
                  far_pa_start=None, far_pa_end=None,
                  min_nr_regions=None, max_nr_regions=None):
     """Build complete config dict with kdamonds + optional auto_tier."""
-    sources = resolve_probe_weights(parse_hotness(hotness_str), cold_demote)
+    sources = resolve_probe_weights(parse_hotness(hotness_str))
 
     # Validate: all sources must share same ops mode
     ops_modes = set(_SOURCE_OPS.get(s, 'vaddr') for s, _ in sources)
@@ -790,7 +804,7 @@ def build_config(hotness_str, near_node=0, far_node=1,
             'paddr sources (ibs) use PA regions, not PIDs')
 
     # One context, one kdamond: the cold scheme rides in the hot context so
-    # both directions see the same region list and the same access rates.
+    # both directions see the same region list and the same probe hits.
     hot_ctx = build_hot_context(
         sources, ops, near_node=near_node, far_node=far_node,
         pids=pids, target_bp=target_bp,
