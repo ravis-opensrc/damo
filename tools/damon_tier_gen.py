@@ -603,6 +603,33 @@ def addr_reject_outside_filter(ranges):
         address_range=_damon.DamonRegion(lo, hi))
 
 
+# Share of each quota reset interval the paddr hot schemes may spend migrating.
+#
+# DAMOS migrates inside the kdamond, so the time it spends moving pages is time
+# it does not sample, drain the perf rings or age regions.  The two hot schemes
+# are steered by node_eligible_mem_bp goals, and near a goal the sampled hot set
+# jitters across it, so the schemes keep taking turns at their full size quota.
+# With only a size quota that is several seconds of migration per second: the
+# aggregations that should take 100 ms take seconds, the rings fill, and the
+# cold scheme's age gate, counted in aggregations, falls far behind in time.
+# A time quota bounds the migration to this many milliseconds per interval, so
+# the monitoring keeps its configured pace however fast pages move.
+_HOT_MIGRATION_TIME_MS = 200
+
+# The paddr cold scheme's share of each quota reset interval, for the same
+# reason, and the fraction of a region's unmigrated size it is charged.
+#
+# In paddr the coldest regions are free memory: no probe ever samples it, so it
+# is always the oldest zero-hit memory, and the quota's priority order offers it
+# first.  Charged at its full size, it uses up the quota every interval while
+# nothing migrates, and the idle pages the scheme exists for are never reached.
+# Charging what fails to migrate at a small fraction lets the scheme pass over
+# free memory to the movable pages behind it.  The time quota then becomes the
+# limit, as walking free memory still takes time.
+_COLD_PA_MIGRATION_TIME_MS = 200
+_COLD_PA_FAIL_CHARGE = (1, 100)
+
+
 def _build_paddr_schemes(dram_ranges, cxl_ranges, near_node, far_node,
                          target_bp=None):
     """PULL+PUSH schemes with addr filters and node_eligible_mem_bp goals."""
@@ -619,7 +646,7 @@ def _build_paddr_schemes(dram_ranges, cxl_ranges, near_node, far_node,
             target_value=str(goal_bp),
             nid=str(nid))
         quotas = _damon.DamosQuotas(
-            time_ms=0,
+            time_ms=_HOT_MIGRATION_TIME_MS,
             sz_bytes=5368709120,
             reset_interval_ms=1000,
             goals=[goal],
@@ -757,12 +784,20 @@ def build_cold_scheme(near_node=0, far_node=1, mode='reactive',
             metric=_damon.qgoal_node_mem_free_bp,
             target_value='1 %',
             nid=str(near_node))]
+    if near_ranges:
+        time_ms = _COLD_PA_MIGRATION_TIME_MS
+        fail_charge_num, fail_charge_denom = _COLD_PA_FAIL_CHARGE
+    else:
+        time_ms = 1000
+        fail_charge_num, fail_charge_denom = 0, 0
     quotas = _damon.DamosQuotas(
-        time_ms=1000,
+        time_ms=time_ms,
         sz_bytes=10737418240,
         reset_interval_ms=1000,
         goals=goals,
-        goal_tuner='temporal')
+        goal_tuner='temporal',
+        fail_charge_num=fail_charge_num,
+        fail_charge_denom=fail_charge_denom)
     filters = []
     if near_ranges:
         filters.append(addr_reject_outside_filter(near_ranges))
